@@ -1,0 +1,57 @@
+name: Inspect GBD vdwb_k6_n400
+
+on:
+  push:
+    branches: [sat-vdwb-k6-n400]
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Inspect stored database representation
+        run: |
+          set -euxo pipefail
+          file cnf/meta.db
+          head -n 5 cnf/meta.db || true
+          wc -c cnf/meta.db
+
+      - name: Rehydrate SQLite and locate benchmark
+        run: |
+          set -euxo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y sqlite3
+          rm -f /tmp/meta.sqlite
+          sqlite3 /tmp/meta.sqlite < cnf/meta.db
+          echo "TABLES:"
+          sqlite3 /tmp/meta.sqlite ".tables"
+          echo "SCHEMA:"
+          sqlite3 /tmp/meta.sqlite ".schema" | head -n 300
+          echo "TARGET OCCURRENCES:"
+          python - <<'PY'
+          import sqlite3, json
+          target_hash = "0757e47d262b75171c0040987e6d20ce"
+          target_name = "vdwb_k6_n400"
+          con = sqlite3.connect("/tmp/meta.sqlite")
+          cur = con.cursor()
+          tables = [r[0] for r in cur.execute("select name from sqlite_master where type='table' order by name")]
+          print("tables", tables)
+          for t in tables:
+              cols = [r[1] for r in cur.execute(f"pragma table_info({json.dumps(t)})")]
+              if not cols:
+                  continue
+              qcols = ",".join('"' + c.replace('"','""') + '"' for c in cols)
+              try:
+                  rows = cur.execute(f'SELECT {qcols} FROM "{t}"').fetchall()
+              except Exception as e:
+                  print("skip", t, e)
+                  continue
+              for row in rows:
+                  s = " | ".join("" if v is None else str(v) for v in row)
+                  if target_hash in s or target_name in s:
+                      print("MATCH TABLE", t)
+                      print("COLS", cols)
+                      print("ROW", row)
+          con.close()
+          PY
